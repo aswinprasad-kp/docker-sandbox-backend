@@ -1,0 +1,13 @@
+# Local environment files
+*.env
+*.env.*
+*.local
+!.env.example
+
+# Compiled Go binaries
+api-server
+main
+
+# Go test and coverage files
+*.test
+*.out
