@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"database/sql"
 	"log"
 	"os"
@@ -74,15 +73,4 @@ func InitDB() {
 
 	// --- 2. Initialize sqlc ---
 	Queries = database.New(DB)
-
-	// --- 3. Seed a Dummy User ---
-	_, err = Queries.CreateUser(context.Background(), database.CreateUserParams{
-		ID:       "user-123",
-		Username: "Neo",
-	})
-	if err != nil && err.Error() != "pq: duplicate key value violates unique constraint \"users_pkey\"" {
-		log.Printf("⚠️ Note: Could not create dummy user: %v", err)
-	} else {
-		log.Println("👤 Dummy user 'user-123' (Neo) is ready in the database.")
-	}
 }

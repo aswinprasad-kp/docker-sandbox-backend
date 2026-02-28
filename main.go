@@ -16,6 +16,35 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 )
 
+func getMessagesHandler(w http.ResponseWriter, r *http.Request) {
+	// 1. Fetch the last 100 messages from Postgres
+	msgs, err := Queries.GetMessages(context.Background())
+	if err != nil {
+		http.Error(w, "Failed to fetch messages", http.StatusInternalServerError)
+		return
+	}
+
+	// 2. Format them for the frontend
+	var response []map[string]interface{}
+	for _, m := range msgs {
+		msgType := "NEW_TEXT"
+		if m.FileUrl.Valid {
+			msgType = "NEW_IMAGE"
+		}
+		response = append(response, map[string]interface{}{
+			"type":       msgType,
+			"message_id": m.ID,
+			"user_id":    m.UserID,
+			"username":   m.Username,
+			"content":    m.Content.String,
+			"url":        m.FileUrl.String,
+		})
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(response)
+}
+
 // uploadHandler handles the HTTP POST request from the React frontend
 func uploadHandler(grpcClient pb.MediaServiceClient, hub *Hub) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -42,13 +71,15 @@ func uploadHandler(grpcClient pb.MediaServiceClient, hub *Hub) http.HandlerFunc 
 			return
 		}
 
+		userID := r.Context().Value(userIDKey).(string)
+
 		// 3. Send the Metadata as the very first message
 		err = stream.Send(&pb.FileUploadRequest{
 			Request: &pb.FileUploadRequest_Metadata{
 				Metadata: &pb.FileMetadata{
 					FileName:    header.Filename,
 					ContentType: header.Header.Get("Content-Type"),
-					UploaderId:  "user-123", // Hardcoded for this test
+					UploaderId:  userID, // Hardcoded for this test
 				},
 			},
 		})
@@ -94,7 +125,7 @@ func uploadHandler(grpcClient pb.MediaServiceClient, hub *Hub) http.HandlerFunc 
 
 		// 🚨 NEW: 6. Save the message to PostgreSQL using sqlc!
 		msg, err := Queries.CreateMessage(ctx, database.CreateMessageParams{
-			UserID: "user-123",
+			UserID: userID,
 			Content: sql.NullString{
 				String: "", // It's just an image upload, no text yet
 				Valid:  false,
@@ -112,12 +143,15 @@ func uploadHandler(grpcClient pb.MediaServiceClient, hub *Hub) http.HandlerFunc 
 
 		log.Printf("💾 Saved Message #%d to Database via sqlc!", msg.ID)
 
+		username := r.Context().Value(usernameKey).(string)
+
 		// 🚨 NEW: Broadcast to all active WebSockets!
 		// We package the message data into JSON and throw it into the Hub's broadcast channel.
 		broadcastMsg, _ := json.Marshal(map[string]interface{}{
 			"type":       "NEW_IMAGE",
 			"message_id": msg.ID,
 			"user_id":    msg.UserID,
+			"username":   username,
 			"url":        res.FileUrl,
 		})
 		hub.broadcast <- broadcastMsg
@@ -150,14 +184,16 @@ func main() {
 
 	grpcClient := pb.NewMediaServiceClient(conn)
 
+	http.HandleFunc("/api/messages", AuthMiddleware(getMessagesHandler))
+
 	// 2. Set up the HTTP router
 	// Inject the Hub into the upload handler
-	http.HandleFunc("/api/upload", uploadHandler(grpcClient, chatHub))
+	http.HandleFunc("/api/upload", AuthMiddleware(uploadHandler(grpcClient, chatHub)))
 
 	// 3. 🚨 Create the WebSocket endpoint
-	http.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
+	http.HandleFunc("/ws", AuthMiddleware(func(w http.ResponseWriter, r *http.Request) {
 		serveWs(chatHub, w, r)
-	})
+	}))
 
 	log.Println("🌐 API Hub listening on :8080")
 	log.Fatal(http.ListenAndServe(":8080", nil))
